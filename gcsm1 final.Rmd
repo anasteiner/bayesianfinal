@@ -1,0 +1,976 @@
+---
+title: "Bayesian final study"
+author: "GCSM1"
+date: "2024-08-16"
+output: html_document
+---
+
+## Load packages and libraries
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(sf)
+library(rstan)
+library(bayesplot)
+library(ggplot2)
+library(spdep)
+library(readr)
+```
+
+## Load data
+```{r}
+religion_2001 <- read_csv("C:/Users/USUARIO/Documents/UCL//Dissertation/v3 longitudinal diaspora study/Data/neighborhood data/religion borough 2001.csv")
+religion_2011 <- read_csv("C:/Users/USUARIO/Documents/UCL//Dissertation/v3 longitudinal diaspora study/Data/neighborhood data/religion lsoa 2011.csv")
+religion_2021 <- read_csv("C:/Users/USUARIO/Documents/UCL//Dissertation/v3 longitudinal diaspora study/Data/neighborhood data/religion msoa 2021.csv")
+greenery_df <- read_csv("C:/Users/USUARIO/Documents/UCL//Dissertation/v3 longitudinal diaspora study/Data/neighborhood data/greenery boroughs.csv")
+crime_df <- read_csv("C:/Users/USUARIO/Documents/UCL//Dissertation/v3 longitudinal diaspora study/Data/neighborhood data/historic crime 2010-2021.csv")
+accomodation_2011 <- read_csv('C:/Users/USUARIO/Documents/UCL/Dissertation/v3 longitudinal diaspora study/Data/housing 2011.csv')
+accomodation_2021 <- read_csv('C:/Users/USUARIO/Documents/UCL/Dissertation/v3 longitudinal diaspora study/Data/housing 2021.csv')
+tenure_2001 <- read_csv('C:/Users/USUARIO/Documents/UCL/Dissertation/v3 longitudinal diaspora study/Data/home tenure 2001.csv')
+tenure_2011 <- read_csv('C:/Users/USUARIO/Documents/UCL/Dissertation/v3 longitudinal diaspora study/Data/home tenure 2011.csv')
+tenure_2021 <- read_csv('C:/Users/USUARIO/Documents/UCL/Dissertation/v3 longitudinal diaspora study/Data/home tenure 2021.csv')
+housing_data <- read_csv('C:/Users/USUARIO/Documents/UCL/Summer/bayesian/housing_in_london_yearly_variables.csv')
+
+# Spatial data
+msoa <- st_read("C:/Users/USUARIO/Documents/UCL/Dissertation/v3 longitudinal diaspora study/Data/MSOA_2011_London_gen_MHW.shp")
+lsoa <- st_read("C:/Users/USUARIO/Documents/UCL/Dissertation/v3 longitudinal diaspora study/Data/LSOA_2011_London_gen_MHW.shp")
+borough <- st_read("C:/Users/USUARIO/Documents/UCL/Dissertation/v3 longitudinal diaspora study/Data/London_Borough_Excluding_MHW.shp")
+```
+
+## Clean religion data
+```{r}
+# Religion 2001
+library(dplyr)
+
+# Convert the columns representing religions to numeric, if necessary
+religion_2001[ , 4:11] <- lapply(religion_2001[ , 4:11], as.numeric)
+
+names(religion_2001)
+
+#Eliminate columns
+religion_2001 <- religion_2001[, -c(1, 3)]
+
+# Define the function to find the majority religion
+majority_religion <- function(row) {
+  # Extract only the numeric values
+  religion_counts <- c(
+    Christian = row["Christian"],
+    Buddhist = row["Buddhist"],
+    Hindu = row["Hindu"],
+    Jewish = row["Jewish"],
+    Muslim = row["Muslim"],
+    Sikh = row["Sikh"],
+    `Other religions` = row["Other religions"],
+    `No religion` = row["No religion"]
+  )
+  
+  # Find the maximum value
+  max_count <- max(religion_counts)
+    # Find the names with the maximum value
+  majority_religions <- names(religion_counts)[religion_counts == max_count]
+  
+  # Check for ties
+  if (length(majority_religions) > 1) {
+    return("No single majority")
+  }
+  
+  return(majority_religions)
+}
+
+
+# Apply the function to each row
+religion_2001$Majority_Religion <- apply(religion_2001, 1, majority_religion)
+
+#Eliminate columns
+religion_2001 <- religion_2001[, -c(2, 3, 4, 5, 6, 7, 8, 9)]
+
+merged_2001_religion <- religion_2001 %>%
+  left_join(msoa, by = c("Borough" = "LAD11NM"))
+
+#Eliminate columns
+merged_2001_religion <- merged_2001_religion[, -c(1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)]
+```
+
+```{r}
+# Religion 2011
+
+#Eliminate columns
+religion_2011 <- religion_2011[, -c(2)]
+
+# Rename columns for easier access
+religion_2011 <- religion_2011 %>%
+  rename(
+    LSOA = `Lower Super Output Area`,
+    Christian = `Religion;Christian;2011`,
+    Buddhist = `Religion;Buddhist;2011`,
+    Hindu = `Religion;Hindu;2011`,
+    Jewish = `Religion;Jewish;2011`,
+    Muslim = `Religion;Muslim;2011`,
+    Sikh = `Religion;Sikh;2011`,
+    Other_religion = `Religion;Other religion;2011`,
+    No_religion = `Religion;No religion;2011`,
+    Religion_not_stated = `Religion;Religion not stated;2011`
+  )
+
+# Convert relevant columns to numeric
+religion_2011 <- religion_2011 %>%
+  mutate(across(Christian:Religion_not_stated, as.numeric))
+
+# Revised function to determine the majority religion
+majority_religion <- function(Christian, Buddhist, Hindu, Jewish, Muslim, Sikh, Other_religion, No_religion, Religion_not_stated) {
+  # Create a named vector of religion counts
+  religion_counts <- c(
+    Christian = Christian,
+    Buddhist = Buddhist,
+    Hindu = Hindu,
+    Jewish = Jewish,
+    Muslim = Muslim,
+    Sikh = Sikh,
+    Other_religion = Other_religion,
+    No_religion = No_religion,
+    Religion_not_stated = Religion_not_stated
+  )
+  
+  # Remove NA values
+  religion_counts <- na.omit(religion_counts)
+  
+  # Check if there are any valid counts left
+  if (length(religion_counts) == 0) {
+    return("No data available")
+  }
+  
+  # Find the maximum count
+  max_count <- max(religion_counts)
+  
+  # Identify which religions have the maximum count
+  majority_religions <- names(religion_counts)[religion_counts == max_count]
+  
+  # Return the majority religion if there’s a clear winner
+  if (length(majority_religions) == 1) {
+    return(majority_religions)
+  } else {
+    return("No single majority")
+  }
+}
+
+library(dplyr)
+
+# Apply the function to each row
+religion_2011 <- religion_2011 %>%
+  rowwise() %>%
+  mutate(Majority_Religion = majority_religion(
+    Christian, Buddhist, Hindu, Jewish, Muslim, Sikh, Other_religion, No_religion, Religion_not_stated
+  )) %>%
+  ungroup()
+
+#Eliminate columns
+religion_2011 <- religion_2011[, -c(2, 3, 4, 5, 6, 7, 8, 9, 10)]
+
+# Define a function to get the most frequent religion
+most_frequent_religion <- function(religions) {
+  # Count the occurrences of each religion
+  counts <- table(religions)
+  
+  # Find the religion with the highest count
+  max_count <- max(counts)
+  most_frequent_religions <- names(counts)[counts == max_count]
+  
+  # Return the most frequent religion if there’s a clear winner
+  if (length(most_frequent_religions) == 1) {
+    return(most_frequent_religions)
+  } else {
+    return("No single majority")
+  }
+}
+
+merged_2011_religion <- religion_2011 %>%
+  left_join(lsoa, by = c("LSOA" = "LSOA11CD"))
+
+# Aggregate by MSOA and determine the most frequent majority religion
+aggregated_2011_religion <- merged_2011_religion %>%
+  group_by(MSOA11CD) %>%  # Use MSOA11CD or MSOA11NM for grouping
+  summarise(
+    Most_Frequent_Religion = most_frequent_religion(Majority_Religion),
+    .groups = 'drop'  # Drop the grouping structure
+  )
+
+# Join 2011 and 2001 religion
+religion_joined <- merged_2001_religion %>%
+  left_join(aggregated_2011_religion, by = "MSOA11CD")
+
+# Rename columns using rename()
+religion_joined  <- religion_joined  %>%
+  rename(
+    `2001` = `Majority_Religion`,
+    `2011` = `Most_Frequent_Religion`,
+  )
+```
+
+```{r}
+# Religion 2021
+
+# Rename the column 'Middle layer Super Output Areas Code' to 'msoa11cd'
+religion_2021 <- religion_2021 %>%
+  rename(msoa11cd = `Middle layer Super Output Areas Code`)
+
+# Print column names to verify
+print(names(religion_2021))
+
+# Filter out 'Does not apply' and find the majority religion for each MSOA
+majority_religion <- religion_2021 %>%
+  filter(`Religion (detailed) (58 categories)` != "Does not apply") %>%
+  group_by(msoa11cd) %>%
+  slice(which.max(Observation)) %>%
+  dplyr::select(msoa11cd, `Religion (detailed) (58 categories)`) %>%
+  rename(religion = `Religion (detailed) (58 categories)`)
+
+# join to shp
+final_religion <- religion_joined %>%
+  left_join(majority_religion, by = c("MSOA11CD" = "msoa11cd")) 
+
+# Rename columns 
+final_religion  <- final_religion  %>%
+  rename(
+    `2021` = `religion`,
+  )
+
+# Create a data frame with years 2011-2018
+years <- data.frame(year = 2011:2018)
+
+# Merge files
+expanded_religion <- merge(majority_religion, years)
+```
+
+## Clean greenery data
+```{r}
+library(dplyr)
+
+greenery_df_cleaned <- greenery_df %>%
+  rename(area = lb_code) %>%  # Rename lb_code to area
+  dplyr::select(area, percent_green) %>%  # Select the desired columns
+  na.omit() %>%  # Remove rows with NA values
+  mutate(percent_green = as.numeric(percent_green))
+
+# Create a data frame with years 
+years <- seq(2011, 2018)
+
+# Use merge() to perform a Cartesian join
+expanded_grenery <- merge(greenery_df_cleaned, years)
+
+# Change column name
+names(expanded_grenery)[names(expanded_grenery) == "y"] <- "Year"
+
+# Join to msoa chp
+borough_greenery <- expanded_grenery %>%
+  left_join(msoa, by = c("area" = "LAD11NM"))
+
+# Calculate greenery of each msoa
+borough_pop <- borough_greenery %>%
+  group_by(LAD11CD) %>%
+  summarize(total_borough_population = sum(USUALRES))
+
+# Merge total borough population back to the original dataframe
+borough_greenery <- merge(borough_greenery, borough_pop, by = "LAD11CD")
+
+# Calculate the proportion of each MSOA in the borough
+borough_greenery$population_proportion <- borough_greenery$USUALRES / borough_greenery$total_borough_population
+
+# Assign greenery percentage to each MSOA
+borough_greenery$MSOA_percent_green <- borough_greenery$population_proportion * borough_greenery$percent_green
+
+# Select relevant columns for the result
+msoa_green <- dplyr::select(borough_greenery, MSOA11CD, MSOA11NM, Year, MSOA_percent_green)
+```
+## Clean crime data
+```{r}
+library(dplyr)
+library(tidyr)
+# Crime data
+
+# Rename 'Borough' column to 'Code'
+crime_df <- crime_df %>% rename(code = Borough)
+
+# Aggregate crime values by 'Code'
+aggregated_crime <- crime_df %>%
+  group_by(code) %>%
+  summarise(across(starts_with("20"), sum, na.rm = TRUE))
+
+# Sum values by year
+aggregated_crime <- aggregated_crime %>%
+  gather(key = "YearMonth", value = "Count", -code) %>%
+  mutate(Year = substr(YearMonth, 1, 4)) %>%
+  group_by(code, Year) %>%
+  summarise(Yearly_Total = sum(Count)) %>%
+  spread(key = Year, value = Yearly_Total)
+
+# Filter to keep only years 2011-2018
+years_to_keep <- as.character(seq(2011, 2018, by = 1))
+final_crime <- dplyr::select(aggregated_crime, code, all_of(years_to_keep))
+
+# Transform to long format
+long_crime <- final_crime %>%
+  pivot_longer(cols = `2011`:`2018`, names_to = "Year", values_to = "crime_counts")
+
+# Join to msoa chp
+borough_crime <- long_crime %>%
+  left_join(msoa, by = c("code" = "LAD11CD"))
+
+# Calculate crime of each msoa
+borough_pop <- borough_crime %>%
+  group_by(code) %>%
+  summarize(total_borough_population = sum(USUALRES))
+
+# Merge total borough population back to the original dataframe
+borough_crime <- merge(borough_crime, borough_pop, by = "code")
+
+# Calculate the proportion of each MSOA in the borough
+borough_crime$population_proportion <- borough_crime$USUALRES / borough_crime$total_borough_population
+
+# Assign percentage to each MSOA
+borough_crime$MSOA_crime <- borough_crime$population_proportion * borough_crime$crime_counts
+
+# Select relevant columns for the result
+msoa_crime <- dplyr::select(borough_crime, MSOA11CD, MSOA11NM, Year, MSOA_crime)
+```
+
+## Clean accommodation data
+```{r}
+# Accommodation 2011
+
+# Select columns 'Area' and 'Overcrowded ( -1 or less)' from 'house_2011'
+accomodation_2011 <- accomodation_2011[, c('Area', 'Overcrowded ( -1 or less)')]
+
+# Calculate total population per borough
+msoa <- msoa %>%
+  group_by(LAD11NM) %>%
+  mutate(TotalPopulation = sum(USUALRES))
+
+# Calculate the proportion for each MSOA
+msoa <- msoa %>%
+  mutate(Proportion = USUALRES / TotalPopulation)
+
+# Merge accommodation2011 data with MSOA data
+msoa_accomodation_2011 <- merge(msoa, accomodation_2011, by.x = "LAD11NM", by.y = "Area")
+
+# Calculate distributed data
+msoa_accomodation_2011 <- msoa_accomodation_2011 %>%
+  mutate(DistributedOvercrowded = Proportion * `Overcrowded ( -1 or less)`)
+
+# Select final columns
+final_accomodation_2011 <- msoa_accomodation_2011 %>%
+  dplyr::select(MSOA11NM, MSOA11CD, geometry, DistributedOvercrowded)
+
+final_accomodation_2011 <- final_accomodation_2011 %>%
+  rename(
+    occupation_2011 = DistributedOvercrowded
+  )
+
+# Accommodation 2021
+
+# Selecting columns for accommodation_2021 dataframe
+accomodation_2021 <- accomodation_2021[, c('Lower layer Super Output Areas Code',
+                             'Lower layer Super Output Areas',
+                             'Occupancy rating for bedrooms (5 categories)', 'Observation')]
+
+# Check the structure of the dataframe to ensure column names are correct
+str(accomodation_2021)
+
+# Filter the rows with occupancy rating of bedrooms: "-1 or less"
+clean_accomodation_2021 <- accomodation_2021 %>%
+  group_by(`Lower layer Super Output Areas Code`) %>%
+  filter(row_number() %in% 33:40) %>%
+  ungroup()
+
+# Summarize the total values for each "Lower layer Super Output Areas Code"
+aggregated_accomodation_2021 <- clean_accomodation_2021 %>%
+  group_by(`Lower layer Super Output Areas Code`, `Lower layer Super Output Areas`, `Occupancy rating for bedrooms (5 categories)`) %>%
+  summarise(Total_Observations = sum(Observation, na.rm = TRUE)) %>%
+  ungroup()
+
+# Merge to the LSOA codes
+merged_accomodation_2021 <- merge(aggregated_accomodation_2021, lsoa, by.x = "Lower layer Super Output Areas Code", by.y = "LSOA11CD")
+
+# Aggregate at MSOA level
+agg_accomodation_2021 <- merged_accomodation_2021 %>%
+  group_by(MSOA11CD, MSOA11NM) %>%
+  summarise(
+    Total_Observations = sum(Total_Observations),
+    USUALRES = sum(USUALRES),
+    HHOLDRES = sum(HHOLDRES),
+    COMESTRES = sum(COMESTRES),
+    POPDEN = mean(POPDEN),
+    HHOLDS = sum(HHOLDS),
+    AVHHOLDSZ = mean(AVHHOLDSZ)
+  )
+
+# Select final columns
+final_accomodation_2021 <- agg_accomodation_2021 %>%
+  dplyr::select(MSOA11NM, MSOA11CD, 'Total_Observations')
+
+# Merge to the MSOA codes
+ffinal_accomodation_2021 <- merge(final_accomodation_2021, msoa, by = "MSOA11NM")
+
+# Select final columns
+fffinal_accomodation_2021 <- ffinal_accomodation_2021 %>%
+  dplyr::select(MSOA11NM, MSOA11CD.x, 'Total_Observations', geometry)
+
+fffinal_accomodation_2021 <- fffinal_accomodation_2021 %>%
+  rename(
+    occupation_2021 = 'Total_Observations'
+  )
+
+# Total accommodation dataset
+
+# Join both datasets
+accommodation <- final_accomodation_2011 %>%
+  inner_join(fffinal_accomodation_2021, by = c("MSOA11NM", "MSOA11CD" = "MSOA11CD.x", "geometry"))
+
+# Interpolate missing years
+# Convert the geometry column to an sf object
+accommodation <- st_as_sf(accommodation, crs = 27700)
+
+# Reshape the data for easier interpolation
+accommodation_long <- accommodation %>%
+  pivot_longer(
+    cols = c(occupation_2011, occupation_2021), 
+    names_to = "Year", 
+    names_prefix = "occupation_", 
+    values_to = "Occupation"
+  ) %>%
+  mutate(Year = as.numeric(Year))
+
+# Define years to interpolate
+years <- seq(2011, 2018)
+
+# Perform interpolation for each MSOA
+interpolated_accommodation <- accommodation_long %>%
+  group_by(MSOA11NM, MSOA11CD, geometry) %>%
+  do({
+    data.frame(Year = years,
+               Occupation = approx(.$Year, .$Occupation, xout = years, rule = 2)$y)
+  }) %>%
+  ungroup() %>%
+  st_as_sf()
+```
+
+```{r}
+# Preprocess Tenure data
+
+# Calculate proportions 2001
+tenure_2001 <- tenure_2001 %>%
+  mutate(`2001 Owned` = `Tenure: Owned: Total; measures: Value` / `Tenure: All categories: Tenure; measures: Value`,
+         `2001 Rented` = `Tenure: Private rented: Total; measures: Value` / `Tenure: All categories: Tenure; measures: Value`,
+         `2001 Social` = `Tenure: Social rented: Total; measures: Value` / `Tenure: All categories: Tenure; measures: Value`)
+
+# Keep only the required columns 2001
+tenure_2001 <- tenure_2001 %>%
+  dplyr::select(`geography code`, `2001 Owned`, `2001 Rented`, `2001 Social`)
+
+# Ensure columns are numeric 2011
+tenure_2011 <- tenure_2011 %>%
+  mutate(
+    `Owned outright` = as.numeric(`Owned outright`),
+    `Owned with a mortgage or loan` = as.numeric(`Owned with a mortgage or loan`),
+    `Shared ownership` = as.numeric(`Shared ownership`),
+    `Rented from Local Authority` = as.numeric(`Rented from Local Authority`),
+    `Other social rented` = as.numeric(`Other social rented`),
+    `Private landlord or letting agency` = as.numeric(`Private landlord or letting agency`),
+    `Other private rented` = as.numeric(`Other private rented`),
+    `All Households` = as.numeric(`All Households`)
+  )
+
+# Perform the mutate operations
+tenure_2011 <- tenure_2011 %>%
+  mutate(
+    `2011 Owned` = (`Owned outright` + `Owned with a mortgage or loan` + `Shared ownership`) / `All Households`,
+    `2011 Social` = (`Rented from Local Authority` + `Other social rented`) / `All Households`,
+    `2011 Rented` = (`Private landlord or letting agency` + `Other private rented`) / `All Households`
+  )
+
+# Keep only the required columns 2011
+tenure_2011 <- tenure_2011 %>%
+  dplyr::select(`LSOA code`, `2011 Owned`, `2011 Rented`, `2011 Social`)
+
+# Ensure columns are numeric 2021
+tenure_2021 <- tenure_2021 %>%
+  mutate(
+    `Owned outright` = as.numeric(`Owned outright`),
+    `Owned with a mortgage or loan` = as.numeric(`Owned with a mortgage or loan`),
+    `Shared ownership` = as.numeric(`Shared ownership`),
+    `Rented from Local Authority` = as.numeric(`Rented from Local Authority`),
+    `Other social rented` = as.numeric(`Other social rented`),
+    `Private landlord or letting agency` = as.numeric(`Private landlord or letting agency`),
+    `Other private rented` = as.numeric(`Other private rented`),
+    `All Households` = as.numeric(`All Households`)
+  )
+
+# Perform the mutate operations
+tenure_2021 <- tenure_2021 %>%
+  mutate(
+    `2021 Owned` = (`Owned outright` + `Owned with a mortgage or loan` + `Shared ownership`) / `All Households`,
+    `2021 Social` = (`Rented from Local Authority` + `Other social rented`) / `All Households`,
+    `2021 Rented` = (`Private landlord or letting agency` + `Other private rented`) / `All Households`
+  )
+
+# Keep only the required columns 2021
+tenure_2021 <- tenure_2021 %>%
+  dplyr::select(`LSOA code`, `2021 Owned`, `2021 Rented`, `2021 Social`)
+
+
+# Join the datasets
+tenure_2001 <- tenure_2001 %>%
+  rename('LSOA code' = `geography code`)
+tenure_2001 <- tenure_2001 %>%
+  mutate(`LSOA code` = as.character(`LSOA code`))
+tenure_2011 <- tenure_2011 %>%
+  mutate(`LSOA code` = as.character(`LSOA code`))
+tenure_2021 <- tenure_2021 %>%
+  mutate(`LSOA code` = as.character(`LSOA code`))
+joined_tenure <- tenure_2001 %>%
+  full_join(tenure_2011, by = "LSOA code") %>%
+  full_join(tenure_2021, by = "LSOA code")
+cleaned_joined_tenure <- joined_tenure %>%
+  drop_na()
+
+# Interpolate missing years
+years <- seq(2011, 2018)
+# Process the data
+interpolated_tenure <- cleaned_joined_tenure %>%
+  pivot_longer(cols = -`LSOA code`, names_to = "variable", values_to = "value") %>%
+  separate(variable, into = c("year", "category"), sep = " ") %>%
+  mutate(year = as.numeric(year)) %>%
+  complete(`LSOA code`, category, year = years) %>%
+  group_by(`LSOA code`, category) %>%
+  arrange(year) %>%
+  mutate(value = zoo::na.approx(value, maxgap = Inf, na.rm = FALSE)) 
+
+# Calculate at msoa level
+lsoa_tenure <- lsoa %>%
+  left_join(interpolated_tenure, by = c("LSOA11CD" = "LSOA code"))
+# Select the required columns
+selected_tenure <- lsoa_tenure %>%
+  dplyr::select(MSOA11CD, category, year, value)
+
+wide_tenure <- selected_tenure %>%
+  pivot_wider(names_from = category,
+values_from = value)
+
+# get unique msoa values
+library(dplyr)
+# Grouping by MSOA and year, then calculating average tenure (Owned, Rented, Social)
+grouped_data <- wide_tenure %>%
+  group_by(MSOA11CD, year) %>%
+  summarise(
+    average_owned = mean(Owned, na.rm = TRUE),
+    average_rented = mean(Rented, na.rm = TRUE),
+    average_social = mean(Social, na.rm = TRUE)
+  )
+
+```
+
+## Create a complete neighborhood dataset
+```{r}
+# Ensure the column names are consistent across all datasets
+expanded_religion <- expanded_religion %>% rename(MSOA11CD = msoa11cd, Year = year)
+grouped_data <- grouped_data %>% rename(Year = year)
+
+# Ensure 'Year' is numeric (integer) across all datasets
+expanded_religion <- expanded_religion %>% 
+  mutate(Year = as.integer(Year))
+
+interpolated_accommodation <- interpolated_accommodation %>% 
+  mutate(Year = as.integer(Year))
+
+grouped_data <- grouped_data %>% 
+  mutate(Year = as.integer(Year))
+
+msoa_crime <- msoa_crime %>% 
+  mutate(Year = as.integer(Year))
+
+msoa_green <- msoa_green %>% 
+  mutate(Year = as.integer(Year))
+
+# Join all datasets using full_join
+neighborhood <- msoa_crime %>%
+  full_join(msoa_green, by = c("MSOA11CD", "Year")) %>%
+  full_join(interpolated_accommodation, by = c("MSOA11CD", "Year")) %>%
+  full_join(expanded_religion, by = c("MSOA11CD", "Year")) %>%
+  full_join(grouped_data, by = c("MSOA11CD", "Year"))
+
+# Clean the resulting data by removing rows with any missing values
+neighborhood_clean <- neighborhood %>%
+  drop_na()
+
+# Select relevant columns and remove duplicates
+neighborhood_clean <- neighborhood_clean %>%
+  dplyr::select(
+    MSOA11CD,
+    Year,
+    MSOA_crime,
+    MSOA_percent_green,
+    geometry.x,        
+    Occupation,
+    religion,
+    average_owned,
+    average_rented,
+    average_social
+  ) %>%
+  rename(geometry = geometry.x)  
+```
+
+```{r}
+# Convert religion to a factor
+neighborhood_clean <- neighborhood_clean %>%
+  mutate(religion_factor = as.factor(religion))
+
+# Convert the factor to numeric values
+neighborhood_clean <- neighborhood_clean %>%
+  mutate(religion_numeric = as.numeric(religion_factor))
+```
+
+## Incorporate other data
+```{r}
+# Preprocess housing data
+housing_data_cleaned <- housing_data %>%
+  mutate(year = as.integer(substr(date, 1, 4))) %>%
+  dplyr::select(area, year, number_of_jobs, population_size, no_of_houses, median_salary) %>%
+  na.omit()
+
+# Verify numeric conversion for specific columns
+housing_data_cleaned <- housing_data_cleaned %>%
+  mutate(across(c(year, number_of_jobs, population_size, no_of_houses, median_salary), as.numeric))
+
+# Filter housing_data_cleaned to keep only years 2011-2018
+housing_data_filt <- housing_data_cleaned %>%
+  filter(year >= 2011 & year <= 2018)
+
+# Ensure all columns are numeric (except for the area name)
+housing_data_filt <- housing_data_filt %>%
+  mutate(
+    number_of_jobs = as.numeric(number_of_jobs),
+    population_size = as.numeric(population_size),
+    no_of_houses = as.numeric(no_of_houses),
+    median_salary = as.numeric(median_salary)
+  )
+
+# Standardize the 'area' and 'LAD11NM' for consistent matching
+housing_data_filt <- housing_data_filt %>%
+  mutate(area = tolower(area))
+msoa <- msoa %>%
+  mutate(LAD11NM = tolower(LAD11NM))
+
+# Join to msoa dataset using LAD11CD (ensure LAD11CD is character in both datasets)
+msoa_housing <- housing_data_filt %>%
+  left_join(msoa, by = c("area" = "LAD11NM"))
+
+# Calculate the proportion at MSOA level
+housing_final <- msoa_housing %>%
+  group_by(LAD11CD, year) %>%
+  mutate(
+    borough_population = sum(USUALRES, na.rm = TRUE),  # Total population per borough
+    msoa_proportion = USUALRES / borough_population    # Proportion of MSOA population to the borough
+  ) %>%
+  ungroup()
+
+housing_ff <- housing_final %>%
+  mutate(
+    number_of_jobs = number_of_jobs * msoa_proportion,
+    population_size = population_size * msoa_proportion,
+    no_of_houses = no_of_houses * msoa_proportion,
+    median_salary = median_salary * msoa_proportion
+  ) %>%
+  dplyr::select(MSOA11CD, year, number_of_jobs, population_size, no_of_houses, median_salary)
+
+# Select the final columns
+housing_ff <- housing_ff %>%
+  dplyr::select(MSOA11CD, year, number_of_jobs, population_size, no_of_houses, median_salary)
+```
+
+## Final join
+```{r}
+# Rename the 'year' column in housing_ff to 'Year'
+housing_ff <- housing_ff %>%
+  rename(Year = year)
+
+# Perform the full join
+neighborhood_house <- neighborhood_clean %>%
+  full_join(housing_ff, by = c("MSOA11CD", "Year"))
+
+# Clean the resulting data by removing rows with any missing values
+neighborhood_house_clean <- neighborhood_house %>%
+  drop_na()
+```
+
+## Incorporate borough and msoa information
+```{r}
+# Join the crime data with the shapefile data
+combined_data <- neighborhood_house_clean %>%
+  left_join(msoa_geometry %>% select(MSOA11CD, LAD11NM, LAD11CD), by = "MSOA11CD")
+
+# Remove the geometry.y column
+combined_data <- combined_data %>%
+  dplyr::select(-geometry.y) %>%
+  rename(geometry = geometry.x)
+```
+
+## Filter for specific 5 boroughs for analysis
+```{r}
+# View the unique borough names in the LAD11NM column
+unique_boroughs <- unique(combined_data$LAD11NM)
+# Print the unique borough names
+print(unique_boroughs)
+
+# Filter to select 5 boroughs (replace with actual borough names)
+selected_boroughs <- c("Islington", "Hackney", "Tower Hamlets", "Camden", "Westminster")
+bayesian_data <- combined_data %>% filter(LAD11NM %in% selected_boroughs)
+```
+
+
+## Correlation matrix
+```{r}
+# Correlation matrix
+
+# Ensure the necessary library is loaded
+library(dplyr)
+library(corrplot)
+
+# Remove non-numeric columns
+numeric_data <- bayesian_data %>%
+  dplyr::select(where(is.numeric))
+
+# Calculate the correlation matrix using only numeric columns
+correlation_matrix <- cor(numeric_data, use = "complete.obs")
+
+# Print the correlation matrix
+print(correlation_matrix)
+
+# Visualize the correlation matrix using corrplot
+corrplot(correlation_matrix, method = "color", type = "upper", 
+         tl.col = "black", tl.srt = 45, 
+         col = colorRampPalette(c("blue", "white", "red"))(200))
+```
+
+## EDA at 5 borough level
+```{r}
+summary_stats <- bayesian_data %>%
+  group_by(Year) %>%
+  summarise(across(where(is.numeric), list(mean = mean, sd = sd, median = median), na.rm = TRUE))
+```
+
+```{r}
+library(ggplot2)
+library(sf)
+library(dplyr)
+
+# Assuming your dataset is named bayesian_data and already contains spatial data
+# Filter the data to include only the selected years
+selected_years <- c(2011, 2014, 2016, 2018)
+filtered_data <- bayesian_data %>%
+  filter(Year %in% selected_years)
+
+# List of variables to plot (excluding geometry, Year, MSOA11CD, LAD11NM, LAD11CD)
+variables_to_map <- c("MSOA_crime", "MSOA_percent_green", "Occupation", "average_owned", 
+                      "average_rented", "average_social", "number_of_jobs", "population_size", 
+                      "no_of_houses", "median_salary")
+
+# Loop through each variable and each year
+for (var in variables_to_map) {
+  for (year in selected_years) {
+    # Filter the data for the specific year
+    year_data <- filtered_data %>%
+      filter(Year == year)
+    
+    # Generate the map
+    p <- ggplot(year_data) +
+      geom_sf(aes(geometry = geometry, fill = .data[[var]])) +
+      scale_fill_viridis_c() +
+      theme_minimal() +
+      labs(title = paste("Map of", var, "in", year),
+           fill = var) +
+      theme(legend.position = "right")
+    
+    # Save the map as a PNG file
+    ggsave(filename = paste0("map_", var, "_", year, ".png"), plot = p, width = 8, height = 6)
+  }
+}
+
+```
+
+
+## Prepare for bayesian model
+```{r}
+# Validate geography
+bayesian_sf <- st_as_sf(bayesian_data, crs = 27700)
+
+# Check for invalid geometries
+invalid_geom <- st_is_valid(bayesian_sf, reason = TRUE)
+print(invalid_geom)
+
+# Check for invalid geometries and eliminate them
+valid_bayesian_sf <- bayesian_sf %>%
+  filter(st_is_valid(geometry))
+```
+
+## Make sure all msoas have 8 years
+```{r}
+# Define the range of years
+required_years <- 2011:2018
+
+# Filter out MSOAs that do not have data for all 8 years
+bayesian_msoas <- bayesian_sf %>%
+  group_by(MSOA11CD) %>%
+  filter(all(required_years %in% Year)) %>%
+  ungroup()
+```
+
+```{r}
+# (if it's already loaded as sf, you can skip this part)
+if (!inherits(bayesian_msoas, "sf")) {
+  bayesian_msoas <- st_as_sf(bayesian_msoas, wkt = "geometry")
+}
+
+# Check unique years and MSOAs
+unique_years <- unique(bayesian_msoas$Year)
+unique_msoas <- unique(bayesian_msoas$MSOA11CD)
+num_years <- length(unique_years)
+num_msoas <- length(unique_msoas)
+```
+
+```{r}
+# Select predictors
+predictors <- c("religion_numeric", "MSOA_percent_green", "Occupation", "average_owned", 
+                "average_rented", "average_social", "number_of_jobs", "population_size", 
+                "no_of_houses", "median_salary")
+
+# Convert predictors to a numeric matrix, ensuring geometry is dropped
+X_matrix <- bayesian_msoas %>%
+  st_drop_geometry() %>%  # Drop the geometry column
+  dplyr::select(religion_numeric, Occupation, average_owned, 
+                average_rented, population_size, 
+                no_of_houses, median_salary) %>%  # Explicitly select the predictors
+  mutate(across(everything(), as.numeric)) %>%  # Ensure all columns are numeric
+  as.matrix()  # Convert to a matrix
+
+# Verify the structure of X_matrix to ensure it is now a numeric matrix without geometry
+str(X_matrix)
+
+# Prepare the response variable
+y <- as.numeric(bayesian_msoas$MSOA_crime)
+```
+
+```{r}
+# Calculate neighbors based on centroids and a suitable distance
+coords <- st_centroid(st_geometry(single_year_data))
+neighbors_distance <- dnearneigh(coords, 0, 1500)  # Set a distance threshold
+
+# Create spatial weights matrix
+W_distance <- nb2mat(neighbors_distance, style = "B", zero.policy = TRUE)
+
+# Visualize the connections to verify
+plot(st_geometry(single_year_data), border="blue")
+plot(neighbors_distance, coords, add=TRUE, col="red")
+```
+```{r}
+# Convert to spatial weights matrix
+W_distance <- nb2mat(neighbors_distance, style = "B", zero.policy = TRUE)
+
+# Print the matrix to check non-zero values
+print(W_distance)
+```
+
+## Stan model
+```{r}
+# Check if there are any non-integer values in y
+any_non_integers <- any(bayesian_msoas$MSOA_crime != floor(bayesian_msoas$MSOA_crime))
+print(any_non_integers)
+
+# If there are non-integer values, convert y to integers
+y <- as.integer(round(bayesian_msoas$MSOA_crime))
+
+```
+
+```{r}
+X_matrix_scaled <- scale(X_matrix)
+
+# Prepare the data for Stan
+stan_data <- list(
+  N = nrow(bayesian_msoas),          # Number of observations
+  K = ncol(X_matrix),                # Number of predictors (10)
+  y = y,                             # Response variable
+  X = X_matrix_scaled,                      # Predictor matrix
+  W = as.matrix(W_distance),         # Updated to use the distance-based weight matrix
+  num_msoas = num_msoas,             # Number of MSOAs
+  num_years = num_years              # Number of years
+)
+
+# Check structure of stan_data to ensure correctness
+str(stan_data)
+
+# Fit the model using Stan
+fit <- stan(
+  file = "C:/Users/USUARIO/Documents/UCL/Summer/bayesian/model.stan",
+  data = stan_data,
+  chains = 4,
+  iter = 6000,  # Increase iterations
+  control = list(max_treedepth = 20, adapt_delta = 0.99) 
+)
+
+# Model diagnostics and output
+print(fit, pars = c("beta", "alpha", "sigma_phi"))
+traceplot(fit, pars = c("beta", "alpha", "sigma_phi"))
+summary(fit)
+pairs(fit)
+
+# Cross-validation
+loo_results <- loo(fit)
+print(loo_results)
+```
+
+## Map of predicted crime
+```{r}
+# Extract the predicted crime rates from the Stan model
+predicted_crimes <- extract(fit)$y_pred
+bayesian_msoas$predicted_crime <- apply(predicted_crimes, 2, mean)
+
+# Create a map of predicted crime rates
+ggplot(data = bayesian_msoas) +
+  geom_sf(aes(fill = predicted_crime)) +
+  scale_fill_viridis_c() +
+  theme_minimal() +
+  labs(title = "Predicted Crime Rates by MSOA",
+       fill = "Predicted Crime Count")
+```
+
+## Map of exceedence probability
+```{r}
+# Set the threshold for exceedance
+threshold <- 30
+
+# Calculate the exceedance probability for each MSOA
+bayesian_msoas$exceedance_prob <- apply(predicted_crimes > threshold, 2, mean)
+
+# Create a map of exceedance probabilities
+ggplot(data = bayesian_msoas) +
+  geom_sf(aes(fill = exceedance_prob)) +
+  scale_fill_viridis_c() +
+  theme_minimal() +
+  labs(title = "Exceedance Probability of Crime Rates",
+       fill = "Probability")
+```
+
+## Comparison map
+```{r}
+# Calculate the difference between actual and predicted crime rates
+bayesian_msoas$crime_diff <- bayesian_msoas$MSOA_crime - bayesian_msoas$predicted_crime
+
+# Create a comparison map showing actual vs predicted crime rates
+ggplot(data = bayesian_msoas) +
+  geom_sf(aes(fill = crime_diff)) +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
+  theme_minimal() +
+  labs(title = "Difference Between Actual and Predicted Crime Rates",
+       fill = "Actual - Predicted")
+```
+
+
+
